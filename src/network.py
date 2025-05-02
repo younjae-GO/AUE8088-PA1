@@ -11,22 +11,63 @@ from torchvision import models
 from torchvision.models.alexnet import AlexNet
 import torch
 
-# Custom packages
-from src.metric import MyAccuracy
+from src.metric import MyAccuracy, MyF1Score
 import src.config as cfg
 from src.util import show_setting
 
 
-# [TODO: Optional] Rewrite this class if you want
-class MyNetwork(AlexNet):
-    def __init__(self):
+class SEModule(nn.Module):
+    def __init__(self, ch, r=16):
         super().__init__()
+        self.avg = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(ch, ch // r, bias=False), nn.GELU(),
+            nn.Linear(ch // r, ch, bias=False), nn.Sigmoid()
+        )
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y
+class DWConv3x3(nn.Sequential):
+    def __init__(self, ch):
+        super().__init__(
+            nn.Conv2d(ch, ch, 3, padding=1, groups=ch, bias=False),
+            nn.BatchNorm2d(ch),
+            nn.GELU()
+        )
 
-        # [TODO] Modify feature extractor part in AlexNet
+class MyNetwork(AlexNet):
+    def __init__(self, num_classes: int = 200):
+        super().__init__(num_classes=200) 
 
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False),
+            nn.BatchNorm2d(64), nn.GELU(),
+            nn.MaxPool2d(3, 2),
+
+            nn.Conv2d(64, 192, 5, padding=2, bias=False),
+            nn.BatchNorm2d(192), nn.GELU(),
+            nn.MaxPool2d(3, 2),
+
+            nn.Conv2d(192, 384, 3, padding=1, bias=False),
+            nn.BatchNorm2d(384), nn.GELU(),
+
+            nn.Conv2d(384, 256, 3, padding=1, bias=False),
+            nn.BatchNorm2d(256), nn.GELU(),
+
+            DWConv3x3(256),
+            nn.Conv2d(256, 256, 1, bias=False),
+            nn.BatchNorm2d(256), nn.GELU(),
+            SEModule(256),
+
+            nn.MaxPool2d(3, 2)
+        )
+
+        self.avgpool    = nn.AdaptiveAvgPool2d(1)
+        self.classifier = nn.Linear(256, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # [TODO: Optional] Modify this as well if you want
         x = self.features(x)
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
@@ -56,6 +97,7 @@ class SimpleClassifier(LightningModule):
 
         # Metric
         self.accuracy = MyAccuracy()
+        self.my_f1 = MyF1Score(num_classes)
 
         # Hyperparameters
         self.save_hyperparameters()
@@ -79,14 +121,16 @@ class SimpleClassifier(LightningModule):
     def training_step(self, batch, batch_idx):
         loss, scores, y = self._common_step(batch)
         accuracy = self.accuracy(scores, y)
-        self.log_dict({'loss/train': loss, 'accuracy/train': accuracy},
+        f1_score = self.my_f1(scores, y)
+        self.log_dict({'loss/train': loss, 'accuracy/train': accuracy, 'f1_score/train': f1_score},
                       on_step=False, on_epoch=True, prog_bar=True, logger=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         loss, scores, y = self._common_step(batch)
         accuracy = self.accuracy(scores, y)
-        self.log_dict({'loss/val': loss, 'accuracy/val': accuracy},
+        f1_score = self.my_f1(scores, y)
+        self.log_dict({'loss/val': loss, 'accuracy/val': accuracy, 'f1_score/val': f1_score},
                       on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self._wandb_log_image(batch, batch_idx, scores, frequency = cfg.WANDB_IMG_LOG_FREQ)
 

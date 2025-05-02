@@ -16,9 +16,9 @@ import src.config as cfg
 
 torch.set_float32_matmul_precision('medium')
 
+#   ps aux|grep wandb|grep -v grep | awk '{print $2}'|xargs kill -9
 
 if __name__ == "__main__":
-
     model = SimpleClassifier(
         model_name = cfg.MODEL_NAME,
         num_classes = cfg.NUM_CLASSES,
@@ -49,6 +49,7 @@ if __name__ == "__main__":
             ModelCheckpoint(save_top_k=1, monitor='accuracy/val', mode='max'),
         ],
     )
+
 
     trainer.fit(model, datamodule=datamodule)
     trainer.validate(ckpt_path='best', datamodule=datamodule)
